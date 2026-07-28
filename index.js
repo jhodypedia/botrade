@@ -11,12 +11,14 @@ import OpenAI from 'openai';
 
 dotenv.config();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const BOT_NAME = process.env.BOT_NAME || 'Scalp Analyst';
+const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
+const QWEN_BASE_URL =
+  process.env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-vl-max';
+const BOT_NAME = process.env.BOT_NAME || 'Qwen Scalp Analyst';
 const AUTH_FOLDER = process.env.AUTH_FOLDER || './auth_info';
 const MAX_IMAGE_MB = Number(process.env.MAX_IMAGE_MB || 8);
 const TIMEFRAME_HINT = process.env.TIMEFRAME_HINT || '1m,3m,5m,15m';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-5.6';
 const ALLOWED_PRIVATE_NUMBERS = new Set(
   (process.env.ALLOWED_PRIVATE_NUMBERS || '')
     .split(',')
@@ -24,14 +26,17 @@ const ALLOWED_PRIVATE_NUMBERS = new Set(
     .filter(Boolean)
 );
 
-if (!OPENAI_API_KEY) {
-  console.error('OPENAI_API_KEY belum diisi di file .env');
+if (!QWEN_API_KEY) {
+  console.error('QWEN_API_KEY belum diisi di file .env');
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
-const processingMap = new Map();
+const client = new OpenAI({
+  apiKey: QWEN_API_KEY,
+  baseURL: QWEN_BASE_URL
+});
 
+const processingMap = new Map();
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function normalizeNumber(jid = '') {
@@ -71,11 +76,7 @@ function unwrapMessageContent(message = {}) {
 
 function getTextMessage(message = {}) {
   const msg = unwrapMessageContent(message);
-  return (
-    msg?.conversation ||
-    msg?.extendedTextMessage?.text ||
-    ''
-  );
+  return msg?.conversation || msg?.extendedTextMessage?.text || '';
 }
 
 function extractImageAndCaption(message = {}) {
@@ -166,34 +167,55 @@ async function markRead(sock, key) {
 async function analyzeChartImage(buffer, mimetype, trigger) {
   const base64 = buffer.toString('base64');
 
-  const response = await openai.responses.create({
-    model: AI_MODEL,
-    input: [
+  const completion = await client.chat.completions.create({
+    model: QWEN_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: buildScalpingPrompt(trigger)
+      },
       {
         role: 'user',
         content: [
           {
-            type: 'input_text',
-            text: buildScalpingPrompt(trigger)
+            type: 'text',
+            text: `Analisa chart ${trigger} ini untuk scalping berdasarkan screenshot saja.`
           },
           {
-            type: 'input_image',
-            image_url: `data:${mimetype};base64,${base64}`,
-            detail: 'high'
+            type: 'image_url',
+            image_url: {
+              url: `data:${mimetype};base64,${base64}`
+            }
           }
         ]
       }
-    ]
+    ],
+    stream: false
   });
 
-  return response.output_text?.trim() || 'NO TRADE\nGambar tidak cukup jelas untuk dianalisa.';
+  const content = completion?.choices?.[0]?.message?.content;
+
+  if (typeof content === 'string' && content.trim()) {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .map(item => (item?.type === 'text' ? item.text : ''))
+      .join('\n')
+      .trim();
+
+    if (text) return text;
+  }
+
+  return 'NO TRADE\nGambar tidak cukup jelas untuk dianalisa.';
 }
 
 async function sendMenu(sock, jid, quoted) {
   const text = [
     `*${BOT_NAME}*`,
     '',
-    `Bot ini membaca screenshot chart untuk analisa scalping.`,
+    `Bot ini memakai Qwen AI untuk membaca screenshot chart dan memberi analisa scalping.`,
     '',
     `*Cara pakai:*`,
     `1. Kirim gambar chart ke chat pribadi`,
@@ -324,7 +346,7 @@ async function startSock() {
         await sendTextWithTyping(
           sock,
           jid,
-          `Chart ${trigger} diterima. Sedang saya baca dan susun setup scalping-nya...`,
+          `Chart ${trigger} diterima. Qwen sedang membaca screenshot dan menyusun setup scalping...`,
           m,
           1400
         );
@@ -372,7 +394,7 @@ async function startSock() {
         try {
           analysis = await analyzeChartImage(mediaBuffer, mimetype, trigger);
         } catch (err) {
-          console.error('openai analysis error:', err);
+          console.error('qwen analysis error:', err);
           await sendTextWithTyping(
             sock,
             jid,
@@ -385,7 +407,7 @@ async function startSock() {
         }
 
         const reply = [
-          `*Analisa Scalping ${trigger.toUpperCase()}*`,
+          `*Analisa Scalping ${trigger.toUpperCase()} - Qwen AI*`,
           '',
           analysis,
           '',
