@@ -39,7 +39,7 @@ function normalizeNumber(jid = '') {
 }
 
 function isPrivateJid(jid = '') {
-  return jid.endsWith('@s.whatsapp.net');
+  return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid');
 }
 
 function isGroupJid(jid = '') {
@@ -140,6 +140,8 @@ function buildScalpingPrompt(assetType) {
 
 async function sendTyping(sock, jid, ms = 1200) {
   try {
+    await sock.presenceSubscribe(jid).catch(() => {});
+    await sleep(250);
     await sock.sendPresenceUpdate('composing', jid);
     await sleep(ms);
     await sock.sendPresenceUpdate('paused', jid);
@@ -151,6 +153,14 @@ async function sendTyping(sock, jid, ms = 1200) {
 async function sendTextWithTyping(sock, jid, text, quoted = undefined, typingMs = 1200) {
   await sendTyping(sock, jid, typingMs);
   return sock.sendMessage(jid, { text }, quoted ? { quoted } : {});
+}
+
+async function markRead(sock, key) {
+  try {
+    await sock.readMessages([key]);
+  } catch (err) {
+    console.error('read receipt error:', err?.message || err);
+  }
 }
 
 async function analyzeChartImage(buffer, mimetype, trigger) {
@@ -256,8 +266,9 @@ async function startSock() {
         if (!isPrivateJid(jid)) continue;
         if (!isAllowedNumber(jid)) continue;
 
-        const plainText = getTextMessage(m.message).trim().toLowerCase();
+        await markRead(sock, m.key);
 
+        const plainText = getTextMessage(m.message).trim().toLowerCase();
         if (plainText === '.menu' || plainText === '.help' || plainText === 'help') {
           await sendMenu(sock, jid, m);
           continue;
@@ -315,7 +326,7 @@ async function startSock() {
           jid,
           `Chart ${trigger} diterima. Sedang saya baca dan susun setup scalping-nya...`,
           m,
-          1200
+          1400
         );
 
         let mediaBuffer;
@@ -324,7 +335,7 @@ async function startSock() {
             m,
             'buffer',
             {},
-            { reuploadRequest: sock.updateMediaMessage }
+            { reuploadRequest: sock.updateMediaMessage, logger: P({ level: 'silent' }) }
           );
         } catch (err) {
           console.error('download media error:', err);
@@ -355,7 +366,7 @@ async function startSock() {
 
         const mimetype = imageMessage.mimetype || 'image/jpeg';
 
-        await sendTyping(sock, jid, 1800);
+        await sendTyping(sock, jid, 2000);
 
         let analysis;
         try {
@@ -381,7 +392,7 @@ async function startSock() {
           `_Disclaimer: analisa ini berdasarkan screenshot yang dikirim, bukan feed harga realtime. Tetap cek spread, volatilitas, dan risk management sebelum entry._`
         ].join('\n');
 
-        await sendTextWithTyping(sock, jid, reply, m, 1600);
+        await sendTextWithTyping(sock, jid, reply, m, 1800);
         processingMap.delete(jid);
       } catch (error) {
         console.error('message processing error:', error);
