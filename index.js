@@ -1,7 +1,7 @@
 import makeWASocket, {
   useMultiFileAuthState,
-  downloadMediaMessage,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
   DisconnectReason
 } from 'baileys';
 import dotenv from 'dotenv';
@@ -25,7 +25,7 @@ const ALLOWED_PRIVATE_NUMBERS = new Set(
 );
 
 if (!OPENAI_API_KEY) {
-  console.error('OPENAI_API_KEY belum diisi di .env');
+  console.error('OPENAI_API_KEY belum diisi di file .env');
   process.exit(1);
 }
 
@@ -38,12 +38,12 @@ function normalizeNumber(jid = '') {
   return jid.split('@')[0].replace(/[^0-9]/g, '');
 }
 
-function isGroupJid(jid = '') {
-  return jid.endsWith('@g.us');
-}
-
 function isPrivateJid(jid = '') {
   return jid.endsWith('@s.whatsapp.net');
+}
+
+function isGroupJid(jid = '') {
+  return jid.endsWith('@g.us');
 }
 
 function isBroadcastJid(jid = '') {
@@ -59,48 +59,44 @@ function bytesToMb(bytes = 0) {
   return bytes / 1024 / 1024;
 }
 
-function getTextMessage(message = {}) {
+function unwrapMessageContent(message = {}) {
   return (
-    message?.conversation ||
-    message?.extendedTextMessage?.text ||
-    message?.ephemeralMessage?.message?.conversation ||
-    message?.ephemeralMessage?.message?.extendedTextMessage?.text ||
+    message?.ephemeralMessage?.message ||
+    message?.viewOnceMessage?.message ||
+    message?.viewOnceMessageV2?.message ||
+    message?.viewOnceMessageV2Extension?.message ||
+    message
+  );
+}
+
+function getTextMessage(message = {}) {
+  const msg = unwrapMessageContent(message);
+  return (
+    msg?.conversation ||
+    msg?.extendedTextMessage?.text ||
     ''
   );
 }
 
-function getImagePayload(message = {}) {
-  if (message?.imageMessage) {
-    return { imageMessage: message.imageMessage, caption: message.imageMessage.caption || '' };
+function extractImageAndCaption(message = {}) {
+  const msg = unwrapMessageContent(message);
+
+  if (msg?.imageMessage) {
+    return {
+      imageMessage: msg.imageMessage,
+      caption: (msg.imageMessage.caption || '').trim().toLowerCase()
+    };
   }
 
-  if (message?.ephemeralMessage?.message?.imageMessage) {
-    const imageMessage = message.ephemeralMessage.message.imageMessage;
-    return { imageMessage, caption: imageMessage.caption || '' };
-  }
-
-  if (message?.viewOnceMessage?.message?.imageMessage) {
-    const imageMessage = message.viewOnceMessage.message.imageMessage;
-    return { imageMessage, caption: imageMessage.caption || '' };
-  }
-
-  if (message?.viewOnceMessageV2?.message?.imageMessage) {
-    const imageMessage = message.viewOnceMessageV2.message.imageMessage;
-    return { imageMessage, caption: imageMessage.caption || '' };
-  }
-
-  if (message?.viewOnceMessageV2Extension?.message?.imageMessage) {
-    const imageMessage = message.viewOnceMessageV2Extension.message.imageMessage;
-    return { imageMessage, caption: imageMessage.caption || '' };
-  }
-
-  return { imageMessage: null, caption: '' };
+  return {
+    imageMessage: null,
+    caption: ''
+  };
 }
 
 function getTrigger(caption = '') {
-  const value = caption.trim().toLowerCase();
-  if (value === '.forex') return 'forex';
-  if (value === '.crypto') return 'crypto';
+  if (caption === '.forex') return 'forex';
+  if (caption === '.crypto') return 'crypto';
   return null;
 }
 
@@ -108,13 +104,15 @@ function buildScalpingPrompt(assetType) {
   const market = assetType === 'forex' ? 'forex' : 'crypto';
 
   return [
-    `Kamu adalah analis chart ${market} untuk kebutuhan scalping manual.`,
-    `Analisa hanya dari screenshot chart yang terlihat. Jangan klaim harga realtime atau data di luar gambar.`,
-    `Target user adalah trader scalping dengan timeframe kecil seperti ${TIMEFRAME_HINT}.`,
-    `Fokus ke struktur market, impuls, pullback, breakout, retest, support/resistance, liquidity sweep, invalidation cepat, dan momentum dekat area entry.`,
-    `Jika chart tidak jelas, blur, pair tidak terlihat, atau setup tidak valid, jawab NO TRADE.`,
-    `Jawaban harus ringkas, realistis, dan actionable dalam Bahasa Indonesia.`,
-    `Gunakan format persis berikut:`,
+    `Kamu adalah analis chart ${market} untuk trader scalping manual.`,
+    `Analisa hanya berdasarkan screenshot chart yang terlihat pada gambar.`,
+    `Jangan mengklaim data realtime, order book realtime, atau harga live di luar gambar.`,
+    `Fokus pada setup scalping timeframe kecil seperti ${TIMEFRAME_HINT}.`,
+    `Perhatikan struktur market, impuls, pullback, breakout, retest, support resistance, momentum, volume visual, dan invalidation cepat.`,
+    `Jika chart tidak jelas, pair tidak terlihat, angka tidak terbaca, atau setup tidak layak, tulis NO TRADE.`,
+    `Jawab singkat, realistis, dan langsung bisa dipakai dalam Bahasa Indonesia.`,
+    ``,
+    `Format jawaban wajib:`,
     `Pair/Asset:`,
     `Bias Utama:`,
     `Timeframe Terlihat:`,
@@ -133,24 +131,26 @@ function buildScalpingPrompt(assetType) {
     `Skor Setup (0-10):`,
     ``,
     `Aturan tambahan:`,
-    `- Jika tidak layak entry, pada bagian Keputusan tulis NO TRADE.`,
-    `- Jangan memberi nasihat investasi umum.`,
+    `- Jika tidak layak entry, di bagian Keputusan tulis NO TRADE.`,
+    `- Jangan membuat angka yang tidak terlihat di chart.`,
     `- Jangan terlalu panjang.`,
-    `- Jangan membuat angka yang terlihat tidak ada di chart.`
+    `- Hindari bahasa promosi atau janji profit.`
   ].join('\n');
 }
 
-async function sendTyping(sock, jid, ms = 1500) {
+async function sendTyping(sock, jid, ms = 1200) {
   try {
     await sock.sendPresenceUpdate('composing', jid);
     await sleep(ms);
     await sock.sendPresenceUpdate('paused', jid);
-  } catch {}
+  } catch (err) {
+    console.error('presence error:', err?.message || err);
+  }
 }
 
 async function sendTextWithTyping(sock, jid, text, quoted = undefined, typingMs = 1200) {
   await sendTyping(sock, jid, typingMs);
-  await sock.sendMessage(jid, { text }, quoted ? { quoted } : {});
+  return sock.sendMessage(jid, { text }, quoted ? { quoted } : {});
 }
 
 async function analyzeChartImage(buffer, mimetype, trigger) {
@@ -183,22 +183,20 @@ async function sendMenu(sock, jid, quoted) {
   const text = [
     `*${BOT_NAME}*`,
     '',
-    `Bot ini khusus analisa chart untuk scalping dari screenshot di chat pribadi.`,
+    `Bot ini membaca screenshot chart untuk analisa scalping.`,
     '',
     `*Cara pakai:*`,
-    `1. Buka chart yang jelas.`,
-    `2. Pastikan candle dan level harga terlihat.`,
-    `3. Screenshot chart.`,
-    `4. Kirim ke bot dengan caption:`,
-    `   - .forex`,
-    `   - .crypto`,
+    `1. Kirim gambar chart ke chat pribadi`,
+    `2. Caption wajib salah satu:`,
+    `- .forex`,
+    `- .crypto`,
     '',
-    `*Tips agar hasil lebih real:*`,
-    `- Pakai timeframe kecil: ${TIMEFRAME_HINT}`,
-    `- Jangan crop terlalu sempit`,
-    `- Hindari gambar blur`,
-    `- Sertakan area price terakhir`,
-    `- Lebih bagus jika terlihat struktur swing terbaru`
+    `*Tips hasil lebih akurat:*`,
+    `- Gunakan timeframe kecil (${TIMEFRAME_HINT})`,
+    `- Pastikan candle terlihat jelas`,
+    `- Jangan blur`,
+    `- Usahakan pair/asset terlihat`,
+    `- Sertakan area price terbaru`
   ].join('\n');
 
   await sendTextWithTyping(sock, jid, text, quoted, 900);
@@ -232,6 +230,7 @@ async function startSock() {
       const code = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
       console.log('Connection closed:', code, 'Reconnect:', shouldReconnect);
+
       if (shouldReconnect) {
         setTimeout(() => startSock(), 3000);
       }
@@ -239,7 +238,7 @@ async function startSock() {
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+    console.log('UPSERT TYPE:', type);
 
     for (const m of messages) {
       const jid = m?.key?.remoteJid || '';
@@ -248,21 +247,31 @@ async function startSock() {
         if (!m?.message) continue;
         if (m.key?.fromMe) continue;
         if (!jid) continue;
+
+        console.log('REMOTE JID:', jid);
+        console.log('RAW MESSAGE:', JSON.stringify(m.message, null, 2));
+
         if (isGroupJid(jid)) continue;
         if (isBroadcastJid(jid)) continue;
         if (!isPrivateJid(jid)) continue;
         if (!isAllowedNumber(jid)) continue;
 
         const plainText = getTextMessage(m.message).trim().toLowerCase();
+
         if (plainText === '.menu' || plainText === '.help' || plainText === 'help') {
           await sendMenu(sock, jid, m);
           continue;
         }
 
-        const { imageMessage, caption } = getImagePayload(m.message);
+        const { imageMessage, caption } = extractImageAndCaption(m.message);
+
+        console.log('HAS IMAGE:', !!imageMessage);
+        console.log('CAPTION:', caption);
+
         if (!imageMessage) continue;
 
         const trigger = getTrigger(caption);
+
         if (!trigger) {
           await sendTextWithTyping(
             sock,
@@ -278,7 +287,7 @@ async function startSock() {
           await sendTextWithTyping(
             sock,
             jid,
-            'Masih ada analisa sebelumnya yang sedang berjalan. Tunggu sebentar ya.',
+            'Masih ada analisa sebelumnya yang sedang diproses. Tunggu sebentar ya.',
             m,
             700
           );
@@ -287,6 +296,7 @@ async function startSock() {
 
         const imageBytes = Number(imageMessage.fileLength || 0);
         const imageMb = bytesToMb(imageBytes);
+
         if (imageBytes > 0 && imageMb > MAX_IMAGE_MB) {
           await sendTextWithTyping(
             sock,
@@ -303,56 +313,89 @@ async function startSock() {
         await sendTextWithTyping(
           sock,
           jid,
-          `Chart ${trigger} diterima. Saya baca dulu screenshot-nya lalu susun setup scalping yang paling masuk akal.`,
+          `Chart ${trigger} diterima. Sedang saya baca dan susun setup scalping-nya...`,
           m,
-          1400
+          1200
         );
 
-        const mediaBuffer = await downloadMediaMessage(
-          m,
-          'buffer',
-          {},
-          { reuploadRequest: sock.updateMediaMessage }
-        );
-
-        if (!mediaBuffer || !Buffer.isBuffer(mediaBuffer)) {
+        let mediaBuffer;
+        try {
+          mediaBuffer = await downloadMediaMessage(
+            m,
+            'buffer',
+            {},
+            { reuploadRequest: sock.updateMediaMessage }
+          );
+        } catch (err) {
+          console.error('download media error:', err);
           await sendTextWithTyping(
             sock,
             jid,
-            'Gagal membaca gambar. Coba kirim ulang screenshot yang lebih jelas.',
+            'Gagal mengambil gambar dari WhatsApp. Coba kirim ulang screenshot yang lebih jelas.',
             m,
-            800
+            700
           );
           processingMap.delete(jid);
           continue;
         }
 
+        if (!mediaBuffer || !Buffer.isBuffer(mediaBuffer)) {
+          await sendTextWithTyping(
+            sock,
+            jid,
+            'Gambar tidak bisa dibaca. Coba kirim ulang screenshot lain.',
+            m,
+            700
+          );
+          processingMap.delete(jid);
+          continue;
+        }
+
+        console.log('BUFFER SIZE:', mediaBuffer.length);
+
         const mimetype = imageMessage.mimetype || 'image/jpeg';
 
-        await sendTyping(sock, jid, 2200);
-        const analysis = await analyzeChartImage(mediaBuffer, mimetype, trigger);
+        await sendTyping(sock, jid, 1800);
+
+        let analysis;
+        try {
+          analysis = await analyzeChartImage(mediaBuffer, mimetype, trigger);
+        } catch (err) {
+          console.error('openai analysis error:', err);
+          await sendTextWithTyping(
+            sock,
+            jid,
+            `Analisa gagal: ${err?.message || 'unknown error'}`,
+            m,
+            700
+          );
+          processingMap.delete(jid);
+          continue;
+        }
 
         const reply = [
           `*Analisa Scalping ${trigger.toUpperCase()}*`,
           '',
           analysis,
           '',
-          '_Disclaimer: analisa berdasarkan screenshot yang kamu kirim, bukan feed realtime. Tetap cek spread, news, dan risk management sebelum entry._'
+          `_Disclaimer: analisa ini berdasarkan screenshot yang dikirim, bukan feed harga realtime. Tetap cek spread, volatilitas, dan risk management sebelum entry._`
         ].join('\n');
 
-        await sendTextWithTyping(sock, jid, reply, m, 1800);
+        await sendTextWithTyping(sock, jid, reply, m, 1600);
         processingMap.delete(jid);
       } catch (error) {
         console.error('message processing error:', error);
+
         if (jid) {
           await sendTextWithTyping(
             sock,
             jid,
-            'Terjadi kendala saat analisa chart. Kirim ulang screenshot yang lebih jelas dan pastikan caption sesuai trigger.',
+            `Terjadi error: ${error?.message || 'unknown error'}`,
             m,
             700
           ).catch(() => {});
         }
+
         processingMap.delete(jid);
       }
     }
