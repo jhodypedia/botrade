@@ -8,10 +8,5 @@
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^7.0.0-rc.3",
-    "dotenv": "^16.6.1",
-    "openai": "^5.12.2",
-    "pino": "^9.11.0",
-    "qrcode-terminal": "^0.12.0"
   }
 }
