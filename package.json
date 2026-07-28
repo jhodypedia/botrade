@@ -4,10 +4,11 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "nodemon server.js",
-    "start": "node server.js",
-    "db:init": "node db/init.js",
-    "bot": "node bot/whatsapp-bot.js"
+    "dev": "nodemon start-all.js",
+    "start": "node start-all.js",
+    "start:web": "node server.js",
+    "start:bot": "node bot/whatsapp-bot.js",
+    "db:init": "node db/init.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.16",
